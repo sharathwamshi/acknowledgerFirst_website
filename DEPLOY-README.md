@@ -1,66 +1,93 @@
-# Deploying to Apache / cPanel
+# Deploying to acknowledgerfirst.com (CloudPanel / nginx) — domain root
 
-This build is configured specifically for the **`/AFPL` subfolder**
-(e.g. `https://yourdomain.com/AFPL/`). Every asset reference (`_next/`,
-`brand/`, `team/`, `video/`) is baked in with that exact prefix at build
-time — if you need a different subfolder name or the domain root instead,
-this build won't work as-is and needs to be rebuilt with the new path,
-not just re-uploaded elsewhere.
+This build has **plain root-absolute paths** (`/_next/...`, `/brand/...`,
+`/team/...`, `/video/...`) with **no subfolder prefix**. It is built for
+serving directly at `https://acknowledgerfirst.com/` — the domain root,
+not `/AFPL` or any other subfolder.
 
-It's a complete static export — plain HTML, CSS, JS, and media files.
-No Node.js, no build step, no server-side code required to run it.
+## Why the site was broken before
 
-## Deploy (the files in this folder)
+The previous build you deployed had every asset path hard-coded with an
+`/AFPL/` prefix (made for a `domain.com/AFPL` subfolder deployment). You
+deployed it to the domain root instead, so the browser requested
+`/AFPL/_next/...`, `/AFPL/video/enterprise.mp4`, etc., which don't exist
+there — hence the wall of 404s. This build fixes that: it has no `/AFPL`
+anywhere, confirmed by grepping every HTML/JS/CSS file.
 
-1. Log into cPanel → **File Manager** (or connect via FTP/SFTP).
-2. Open `public_html`, then create (or open, if it already exists) a
-   folder named exactly **`AFPL`** inside it — so the final path is
-   `public_html/AFPL/`.
-3. Upload **everything inside this folder** — not the folder itself, its
-   *contents* — directly into `public_html/AFPL/`. That means
-   `index.html`, `.htaccess`, `_next/`, `brand/`, `team/`, and `video/`
-   should all sit directly inside `public_html/AFPL/`, not nested in yet
-   another subfolder, and not loose in `public_html/` itself.
-4. If your FTP client hides dotfiles by default, make sure `.htaccess`
-   actually uploads — it's easy to miss since it's invisible in some file
-   managers unless you enable "show hidden files."
-5. Visit `https://yourdomain.com/AFPL/`. That's it — no further server
-   configuration needed.
+## Important: the video file is NOT included in this zip
 
-The included `.htaccess` handles compression, cache headers, and correct
-MIME types for the video file. Most cPanel hosts have the required Apache
-modules (`mod_deflate`, `mod_expires`, `mod_headers`) enabled by default;
-if a section of it doesn't apply, Apache just skips it rather than erroring.
+`video/enterprise.mp4` is unchanged from what you already deployed (it
+was never touched by the `/AFPL` fix), and it's 55MB, so it's left out
+here to keep this download small. **Do not delete your existing
+`video/enterprise.mp4` on the server** — just leave that one file in
+place and overwrite everything else from this zip. If you do a full
+clean wipe of the htdocs folder, copy `video/enterprise.mp4` back in
+from your current GitHub repo or server backup before going live.
+
+## Deploy steps (matches your CloudPanel + GitHub setup)
+
+Your site root on the server is:
+```
+/home/ackfirstweb/htdocs/acknowledgerfirst.com/
+```
+
+1. **Clear out the old broken files**, but keep the video so you don't
+   have to re-upload 55MB:
+   ```bash
+   cd /home/ackfirstweb/htdocs/acknowledgerfirst.com/
+   mkdir -p /tmp/video-backup && cp video/enterprise.mp4 /tmp/video-backup/ 2>/dev/null
+   rm -rf ./* ./.htaccess
+   mkdir -p video && cp /tmp/video-backup/enterprise.mp4 video/ 2>/dev/null
+   ```
+   (if that cp fails because `video/enterprise.mp4` wasn't there to begin
+   with, just remember to add it back in step 2 below)
+2. **Push this corrected `out/` folder's contents** to your
+   `sharathwamshi/acknowledgerFirst_website` GitHub repo (replacing
+   whatever is there now — including removing any `/AFPL`-prefixed
+   files that may currently be committed, and keeping
+   `video/enterprise.mp4` in the repo since it's unchanged), then on
+   the server:
+   ```bash
+   cd /home/ackfirstweb/htdocs/acknowledgerfirst.com/
+   git clone https://github.com/sharathwamshi/acknowledgerFirst_website.git .
+   ```
+   (or `git pull` if you keep the clone elsewhere and copy/symlink the
+   contents of `out/` into the htdocs folder — just make sure
+   `index.html`, `_next/`, `brand/`, `team/`, `video/` end up **directly**
+   inside `acknowledgerfirst.com/`, not nested one level deeper.)
+3. Visit `https://acknowledgerfirst.com/` and hard-refresh
+   (Ctrl/Cmd+Shift+R) to bypass any cached 404s from the browser.
+
+## Note on `.htaccess`
+
+nginx (what CloudPanel uses) ignores `.htaccess` entirely — it's included
+here only for portability in case you ever move to an Apache host. On
+your actual CloudPanel/nginx setup:
+- gzip compression, correct MIME types, and HTTP range requests (needed
+  for video scrubbing) are already handled by nginx's defaults for static
+  sites, so no extra config is required.
+- If you want explicit long-lived caching for `_next/`, `brand/`,
+  `team/`, and `video/` plus no-cache on `index.html`, add this to the
+  site's nginx vhost (`/etc/nginx/sites-enabled/acknowledgerfirst.com.conf`)
+  inside the existing `server { ... }` block, then
+  `clpctl site:reload:nginx` (or `systemctl reload nginx`):
+
+  ```nginx
+  location ~* \.(?:js|css|png|jpg|jpeg|mp4)$ {
+      expires 1y;
+      add_header Cache-Control "public, immutable";
+      add_header Accept-Ranges bytes;
+  }
+  location = /index.html {
+      add_header Cache-Control "no-cache";
+  }
+  ```
 
 ## What's different from the dev-mode version
 
 - The `/api/chat` server route isn't included — static hosting can't run
-  server-side code at all. This costs you nothing today: the chatbot
-  already runs entirely client-side by default (`lib/chatResponder.ts`),
-  answering from the site's own data with no server needed.
-- If you later want the live-Claude-API version of the chatbot, that
-  specifically requires a Node.js-capable host (see the alternative below)
-  — static file hosting can never run that route, regardless of how it's
-  configured.
-
-## Alternative: if your cPanel has "Setup Node.js App"
-
-Some hosts (most CloudLinux-based cPanel setups) let you run the actual
-Next.js server instead of a static export — this gets you the live-API
-chatbot option, on-demand rendering, and image optimization, at the cost
-of needing your host to support it. If you have that option and want to
-use it instead, you'd need the *other* project archive (the one with
-`app/api/chat/route.ts` and a normal `next.config.ts`, not this static
-one) and roughly:
-
-1. cPanel → **Setup Node.js App** → create an application, point it at
-   your project folder, select a recent Node.js version.
-2. Upload the project source (not this `out` folder — the actual source
-   with `package.json`, `app/`, `components/`, etc.).
-3. Run `npm install` and `npm run build` via the Node.js App's terminal.
-4. Set the startup file / command to run `npm run start`.
-5. cPanel wires Apache to reverse-proxy your domain to the Node process
-   automatically.
-
-If your host doesn't offer this, the static export above is the correct
-and complete choice — it isn't a lesser option, just a different one.
+  server-side code. This costs nothing today: the chatbot already runs
+  entirely client-side (`lib/chatResponder.ts`), answering from the
+  site's own data with no server needed.
+- If you ever want the live-Claude-API chatbot, that specifically needs a
+  Node.js-capable host, not this static export.
